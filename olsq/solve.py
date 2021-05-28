@@ -1,6 +1,10 @@
 import math
 import datetime
 
+import multiprocessing
+import os
+import copy
+
 from z3 import Int, IntVector, Bool, Optimize, Implies, And, Or, If, sat
 
 from olsq.input import input_qasm
@@ -501,8 +505,8 @@ class OLSQ:
             else:
                 raise Exception("Invalid Objective Name")
 
-            satisfiable = lsqc.check()
-            if satisfiable == sat:
+            lsqc = self.partition_solution_space(lsqc,bound_depth,count_qubit_edge,sigma)
+            if lsqc is not None:
                 not_solved = False
             else:
                 if self.if_transition_based:
@@ -511,6 +515,13 @@ class OLSQ:
                     bound_depth = int(1.3 * bound_depth)
 
         print(f"Compilation time = {datetime.datetime.now() - start_time}.")
+
+        smt_model = False
+        if smt_model:
+            self.print_smt_model(lsqc,"smt-output2.txt")
+
+        #lsqc.set("parallel.enable",True)
+
         model = lsqc.model()
 
         # post-processing
@@ -669,3 +680,44 @@ class OLSQ:
                                 True, output_file_name),
                     final_mapping,
                     objective_value)
+    
+    def print_smt_model(self,lsqc,filename):
+        writeout = open(filename, "w")
+        writeout.write(lsqc.sexpr())
+        writeout.close()
+
+    def partition_solution_space(self,lsqc,bound_depth,count_qubit_edge,sigma):
+        results = []
+        cpus = os.cpu_count()
+        pool = multiprocessing.Pool(os.cpu_count())
+        cpus = int(cpus/2) #assign CPUs in pairs
+
+
+        for j in range(bound_depth):
+            for i in range(count_qubit_edge):
+                x = pool.apply_async(func = multicore_solving, args=(lsqc,sigma[i][j],True))
+                y = pool.apply_async(func = multicore_solving, args=(lsqc,sigma[i][j],False))
+                results.append(x)
+                results.append(y)
+                cpus -= 1
+                if cpus == 0:
+                    break
+            if cpus == 0:
+                break
+
+        solutions = [r.get() for r in results]
+
+        pool.close()
+        pool.join()
+
+        print(solutions)
+
+        return next(iter(solutions), None)
+
+def multicore_solving(lsqc,var,val):
+    print("hello")
+    lsqc.add(var == val)
+    satisfiable = lsqc.check()
+    return lsqc if satisfiable == sat else None
+
+
