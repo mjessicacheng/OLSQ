@@ -7,7 +7,7 @@ from olsq.olsq_cirq.input import input_cirq
 
 
 class OLSQ_cirq(OLSQ):
-    def __init__(self, objective_name, if_transition_based):
+    def __init__(self, objective_name, if_transition_based, multicore: bool = False):
         """Set the objective of OLSQ_cirq, and whether transition-based.
 
         Args:
@@ -15,7 +15,7 @@ class OLSQ_cirq(OLSQ):
             mode: can be "normal" or "transition" (TB-OLSQ in the paper)       
         """
 
-        super().__init__(objective_name, if_transition_based)
+        super().__init__(objective_name, if_transition_based, multicore)
         self.map_physical_qubit_to = dict() # Cirq qubit |-> qubit index
         self.map_to_physical_qubit = []     # qubit index |-> Cirq qubit
 

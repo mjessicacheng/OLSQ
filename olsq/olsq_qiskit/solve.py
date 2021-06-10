@@ -6,11 +6,11 @@ from olsq.input import input_qasm
 
 
 class OLSQ_qiskit(OLSQ):
-    def __init__(self, objective_name, if_transition_based):
+    def __init__(self, objective_name, if_transition_based, multicore: bool = False):
         """Set the objective of OLSQ_cirq, and whether transition-based.
         """
 
-        super().__init__(objective_name, if_transition_based)
+        super().__init__(objective_name, if_transition_based, multicore)
 
     def setdevice(self, device, mode: str = None):
         """Pass in a device representing hardware in Qiskit.

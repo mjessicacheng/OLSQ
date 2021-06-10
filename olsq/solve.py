@@ -82,7 +82,7 @@ def dependency_extracting(list_gate_qubits, count_program_qubit: int):
 
 
 class OLSQ:
-    def __init__(self, objective_name, mode):
+    def __init__(self, objective_name, mode, multicore: bool = False):
         """Set the objective of OLSQ, and whether it is transition-based
 
         Args:
@@ -122,6 +122,8 @@ class OLSQ:
 
         self.inpput_dependency = False
         self.list_gate_dependency = []
+        
+        self.multicore = multicore
 
     def setdevice(self, device: qcdevice):
         """Pass in parameters from the given device.  If in TB mode,
@@ -234,6 +236,55 @@ class OLSQ:
         self.inpput_dependency = True
 
     def solve(self, output_mode: str = None, output_file_name: str = None):
+        if not self.multicore:
+            return self.solve_fun(output_mode,output_file_name)
+        else:
+            cpus = 2**int(math.log2(os.cpu_count()))
+            pool = multiprocessing.Pool(os.cpu_count())
+            manager = multiprocessing.Manager()
+            return_dict = manager.dict()
+            jobs = []
+
+            for i in range(cpus):
+                x = multiprocessing.Process(target = self.solve_fun, args=(output_mode,output_file_name,i,return_dict))
+                jobs.append(x)
+                x.start()
+
+            for proc in jobs:
+                    proc.join()
+        
+        optimal_value = float('inf')
+        optimal_model = None
+        for model in return_dict:
+            if return_dict[model] is not None and return_dict[model][2] < optimal_value:
+                optimal_value = return_dict[model][2]
+                optimal_model = return_dict[model]
+
+        if output_mode == "IR":
+            (result_depth,
+                    list_scheduled_gate_name,
+                    list_scheduled_gate_qubits,
+                    final_mapping,
+                    objective_value) = optimal_model
+            if output_file_name:
+                output_file = open(output_file_name, 'w')
+                output_file.writelines([list_scheduled_gate_name,
+                                        list_scheduled_gate_qubits,
+                                        final_mapping,
+                                        objective_value])
+            else:
+                return optimal_model
+        else:
+            (output,final_mapping,objective_value) = optimal_model
+            if output_file_name:
+                output_file = open(output_file_name, "w")
+                output_file.write(output)
+            else:
+                return optimal_model
+        
+
+
+    def solve_fun(self, output_mode: str = None, output_file_name: str = None, procnum: int = -1,return_dict = None):
         """Formulate an SMT, pass it to z3 solver, and output results.
         CORE OF OLSQ, EDIT WITH CARE.
 
@@ -383,6 +434,17 @@ class OLSQ:
 
             # constraint setting
 
+            #partition solution space
+            if self.multicore:
+                i = int(procnum/(count_qubit_edge*2))
+                j = int((procnum % count_qubit_edge)/2)
+                val = (procnum % 2 == 0)
+                try:
+                    lsqc.add(sigma[i][j] == val)
+                except:
+                    return_dict[procnum] = None
+                    return
+
             for t in range(bound_depth):
                 for m in range(count_program_qubit):
                     lsqc.add(pi[m][t] >= 0, pi[m][t] < count_physical_qubit)
@@ -505,8 +567,8 @@ class OLSQ:
             else:
                 raise Exception("Invalid Objective Name")
 
-            lsqc = self.partition_solution_space(lsqc,bound_depth,count_qubit_edge,sigma)
-            if lsqc is not None:
+            satisfiable = lsqc.check()
+            if satisfiable == sat:
                 not_solved = False
             else:
                 if self.if_transition_based:
@@ -515,13 +577,6 @@ class OLSQ:
                     bound_depth = int(1.3 * bound_depth)
 
         print(f"Compilation time = {datetime.datetime.now() - start_time}.")
-
-        smt_model = False
-        if smt_model:
-            self.print_smt_model(lsqc,"smt-output2.txt")
-
-        #lsqc.set("parallel.enable",True)
-
         model = lsqc.model()
 
         # post-processing
@@ -662,62 +717,42 @@ class OLSQ:
             else:
                 raise ValueError("Expect SWAP duration one, or three")
 
-        if output_mode == "IR":
-            if output_file_name:
-                output_file = open(output_file_name, 'w')
-                output_file.writelines([list_scheduled_gate_name,
-                                        list_scheduled_gate_qubits,
-                                        final_mapping,
-                                        objective_value])
-            return (result_depth,
-                    list_scheduled_gate_name,
-                    list_scheduled_gate_qubits,
-                    final_mapping,
-                    objective_value)
+        if not self.multicore:
+            if output_mode == "IR":
+                if output_file_name:
+                    output_file = open(output_file_name, 'w')
+                    output_file.writelines([list_scheduled_gate_name,
+                                            list_scheduled_gate_qubits,
+                                            final_mapping,
+                                            objective_value])
+                return (result_depth,
+                        list_scheduled_gate_name,
+                        list_scheduled_gate_qubits,
+                        final_mapping,
+                        objective_value)
+            else:
+                return (output_qasm(device, result_depth, list_scheduled_gate_name,
+                                    list_scheduled_gate_qubits, final_mapping,
+                                    True, output_file_name),
+                        final_mapping,
+                        objective_value)
         else:
-            return (output_qasm(device, result_depth, list_scheduled_gate_name,
-                                list_scheduled_gate_qubits, final_mapping,
-                                True, output_file_name),
-                    final_mapping,
-                    objective_value)
+            if output_mode == "IR":
+                return_dict[procnum] = (result_depth,
+                        list_scheduled_gate_name,
+                        list_scheduled_gate_qubits,
+                        final_mapping,
+                        objective_value)
+            else:
+                return_dict[procnum] = (output_qasm(device, result_depth, list_scheduled_gate_name,
+                                    list_scheduled_gate_qubits, final_mapping,
+                                    True, ),
+                        final_mapping,
+                        objective_value)
     
     def print_smt_model(self,lsqc,filename):
         writeout = open(filename, "w")
         writeout.write(lsqc.sexpr())
         writeout.close()
-
-    def partition_solution_space(self,lsqc,bound_depth,count_qubit_edge,sigma):
-        results = []
-        cpus = os.cpu_count()
-        pool = multiprocessing.Pool(os.cpu_count())
-        cpus = int(cpus/2) #assign CPUs in pairs
-
-
-        for j in range(bound_depth):
-            for i in range(count_qubit_edge):
-                x = pool.apply_async(func = multicore_solving, args=(lsqc,sigma[i][j],True))
-                y = pool.apply_async(func = multicore_solving, args=(lsqc,sigma[i][j],False))
-                results.append(x)
-                results.append(y)
-                cpus -= 1
-                if cpus == 0:
-                    break
-            if cpus == 0:
-                break
-
-        solutions = [r.get() for r in results]
-
-        pool.close()
-        pool.join()
-
-        print(solutions)
-
-        return next(iter(solutions), None)
-
-def multicore_solving(lsqc,var,val):
-    print("hello")
-    lsqc.add(var == val)
-    satisfiable = lsqc.check()
-    return lsqc if satisfiable == sat else None
 
 
