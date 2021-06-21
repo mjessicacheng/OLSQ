@@ -239,14 +239,17 @@ class OLSQ:
         if not self.multicore:
             return self.solve_fun(output_mode,output_file_name)
         else:
-            cpus = 2**int(math.log2(os.cpu_count()))
+            var_count = int(math.log2(os.cpu_count()))
+            cpus = 2**var_count
             pool = multiprocessing.Pool(os.cpu_count())
             manager = multiprocessing.Manager()
             return_dict = manager.dict()
+            min_depth = manager.Value('d',float('inf'))
+
             jobs = []
 
             for i in range(cpus):
-                x = multiprocessing.Process(target = self.solve_fun, args=(output_mode,output_file_name,i,return_dict))
+                x = multiprocessing.Process(target = self.solve_fun, args=(output_mode,output_file_name,i,return_dict,min_depth,var_count))
                 jobs.append(x)
                 x.start()
 
@@ -256,16 +259,16 @@ class OLSQ:
         optimal_value = float('inf')
         optimal_model = None
         for model in return_dict:
-            if return_dict[model] is not None and return_dict[model][2] < optimal_value:
-                optimal_value = return_dict[model][2]
+            if return_dict[model] is not None and return_dict[model][4] < optimal_value:
+                optimal_value = return_dict[model][4]
                 optimal_model = return_dict[model]
 
+        (result_depth,
+            list_scheduled_gate_name,
+            list_scheduled_gate_qubits,
+            final_mapping,
+            objective_value) = optimal_model
         if output_mode == "IR":
-            (result_depth,
-                    list_scheduled_gate_name,
-                    list_scheduled_gate_qubits,
-                    final_mapping,
-                    objective_value) = optimal_model
             if output_file_name:
                 output_file = open(output_file_name, 'w')
                 output_file.writelines([list_scheduled_gate_name,
@@ -275,16 +278,18 @@ class OLSQ:
             else:
                 return optimal_model
         else:
-            (output,final_mapping,objective_value) = optimal_model
+            output = output_qasm(self.device, result_depth, list_scheduled_gate_name,
+                                    list_scheduled_gate_qubits, final_mapping,
+                                    True, )
             if output_file_name:
                 output_file = open(output_file_name, "w")
                 output_file.write(output)
             else:
-                return optimal_model
+                return (output,final_mapping,objective_value)
         
 
 
-    def solve_fun(self, output_mode: str = None, output_file_name: str = None, procnum: int = -1,return_dict = None):
+    def solve_fun(self, output_mode: str = None, output_file_name: str = None, procnum: int = -1,return_dict = None, min_depth = -1, var_count: int = 0):
         """Formulate an SMT, pass it to z3 solver, and output results.
         CORE OF OLSQ, EDIT WITH CARE.
 
@@ -394,6 +399,12 @@ class OLSQ:
         not_solved = True
         start_time = datetime.datetime.now()
         while not_solved:
+
+            #peek other processes to see if they have completed and have less depth. if so, return.
+            if self.multicore:
+                if min_depth.value <= bound_depth:
+                    return
+
             print("Trying maximal depth = {}...".format(bound_depth))
 
             # variable setting 
@@ -436,14 +447,15 @@ class OLSQ:
 
             #partition solution space
             if self.multicore:
-                i = int(procnum/(count_qubit_edge*2))
-                j = int((procnum % count_qubit_edge)/2)
-                val = (procnum % 2 == 0)
-                try:
-                    lsqc.add(sigma[i][j] == val)
-                except:
-                    return_dict[procnum] = None
-                    return
+                bitstring = format(procnum, 'b').zfill(var_count)
+                for i in range(var_count):
+                    val = bool(int(bitstring[i]))
+                    if i < count_qubit_edge:
+                        lsqc.add(sigma[i][0] == val)
+                    elif i < bound_depth:
+                        lsqc.add(sigma[0][i] == val)
+                    else:
+                        return
 
             for t in range(bound_depth):
                 for m in range(count_program_qubit):
@@ -737,16 +749,11 @@ class OLSQ:
                         final_mapping,
                         objective_value)
         else:
-            if output_mode == "IR":
-                return_dict[procnum] = (result_depth,
+            if bound_depth < min_depth.value:
+                min_depth.value = bound_depth
+            return_dict[procnum] = (result_depth,
                         list_scheduled_gate_name,
                         list_scheduled_gate_qubits,
-                        final_mapping,
-                        objective_value)
-            else:
-                return_dict[procnum] = (output_qasm(device, result_depth, list_scheduled_gate_name,
-                                    list_scheduled_gate_qubits, final_mapping,
-                                    True, ),
                         final_mapping,
                         objective_value)
     
